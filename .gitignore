@@ -42,7 +42,9 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+.env.example
 .env.*
+env.example
 azure_config.py
 
 # Logs

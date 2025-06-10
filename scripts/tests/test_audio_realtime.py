@@ -1,16 +1,33 @@
 #!/usr/bin/env python3
 """
-Test script for OpenAI Realtime API audio functionality
-Based on official OpenAI Realtime API: https://platform.openai.com/docs/guides/realtime
+Functional test for the OpenAI Realtime API (WebSockets + PCM-16 audio).
+
+What it does
+------------
+1. Opens wss://api.openai.com/v1/realtime?model=<model>
+2. Sends a `session.update` that asks for both *text* and *audio* output.
+3. Creates a user message and a `response.create` request.
+4. Waits ~10 s for audio chunks (`response.audio.delta`) and prints stats.
+
+Pass/Fail
+---------
+✅ Pass  – at least one audio chunk arrives  
+❌ Fail  – zero audio or any connection / auth error
+
+Environment Variables
+--------------------
+OPENAI_API_KEY          - Required. Your OpenAI API key
+OPENAI_REALTIME_MODEL   - Optional. Model to use (default: gpt-4o-realtime-preview)
 """
 
 import asyncio
-import json
 import base64
-import websockets
+import json
 import logging
 import os
 from typing import Optional
+
+import websockets
 
 # Try to load .env file if it exists
 try:
@@ -20,245 +37,212 @@ except ImportError:
     # python-dotenv not installed, that's fine
     pass
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# -----------------------------------------------------------------------------
+# Configure logging
+logging.basicConfig(
+    format="%(levelname)s | %(message)s", 
+    level=logging.INFO
+)
+log = logging.getLogger(__name__)
 
-class OpenAIRealtimeTest:
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        # Try parameters first, then environment variables
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.model = model or "gpt-4o-realtime-preview-2024-10-01"
-        
-        # Validate required configuration
-        if not self.api_key:
-            raise ValueError("API key not provided. Set OPENAI_API_KEY environment variable or pass api_key parameter.")
-        
-        self.websocket = None
-        self.is_connected = False
-        self.received_audio_chunks = 0
-        self.total_audio_bytes = 0
-        
-    def _build_websocket_url(self) -> str:
-        """Build WebSocket URL for OpenAI Realtime API"""
-        return f"wss://api.openai.com/v1/realtime?model={self.model}"
+# -----------------------------------------------------------------------------
+# Main test class
+class OpenAIRealtimeAudioTest:
+    """Test OpenAI Realtime API audio streaming functionality."""
     
-    def _get_headers(self) -> dict:
-        """Get headers for OpenAI WebSocket connection"""
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        """Initialize the test.
+        
+        Args:
+            api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            model: Model to use (defaults to OPENAI_REALTIME_MODEL env var or gpt-4o-realtime-preview)
+        """
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY environment variable not set")
+        
+        self.model = model or os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
+        
+        # Runtime counters
+        self._ws: Optional[websockets.WebSocketClientProtocol] = None
+        self._audio_chunks = 0
+        self._audio_bytes = 0
+
+    def _ws_url(self) -> str:
+        """Build WebSocket URL for OpenAI Realtime API."""
+        return f"wss://api.openai.com/v1/realtime?model={self.model}"
+
+    def _headers(self) -> dict:
+        """Build WebSocket headers for authentication."""
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "OpenAI-Beta": "realtime=v1"
+            "OpenAI-Beta": "realtime=v1",
         }
-    
-    async def connect_and_test(self):
-        """Connect and test audio functionality"""
-        ws_url = self._build_websocket_url()
-        headers = self._get_headers()
+
+    async def run(self, timeout: float = 10.0) -> bool:
+        """Run the audio streaming test.
         
-        # Hide API key in logs
-        safe_url = ws_url.replace(self.api_key, f"{self.api_key[:8]}...")
-        logger.info(f"🔌 Connecting to OpenAI Realtime API: {safe_url}")
+        Args:
+            timeout: How long to wait for audio chunks (seconds)
+            
+        Returns:
+            True if audio chunks were received, False otherwise
+        """
+        log.info("🔌 Connecting to %s", self._ws_url())
         
         try:
-            self.websocket = await websockets.connect(
-                ws_url,
-                extra_headers=headers,
-                ping_interval=30,
-                ping_timeout=10
-            )
-            
-            self.is_connected = True
-            logger.info("✅ Connected to OpenAI Realtime API")
-            
-            # Configure session
-            await self._configure_session()
-            
-            # Start message handling
-            receive_task = asyncio.create_task(self._receive_loop())
-            
-            # Send test message after short delay
-            await asyncio.sleep(1)
-            await self._send_test_message()
-            
-            # Wait for response
-            await asyncio.sleep(10)
-            
-            # Cleanup
-            receive_task.cancel()
-            await self.websocket.close()
-            
-            # Report results
-            logger.info(f"🎵 Test Results:")
-            logger.info(f"   Audio chunks received: {self.received_audio_chunks}")
-            logger.info(f"   Total audio bytes: {self.total_audio_bytes}")
-            
-            if self.received_audio_chunks > 0:
-                logger.info("✅ Audio streaming is working!")
-                return True
-            else:
-                logger.error("❌ No audio received - something is wrong")
-                return False
-                
-        except websockets.exceptions.WebSocketException as e:
-            if "403" in str(e):
-                logger.error("❌ 403 Forbidden - You don't have access to the Realtime API yet")
-                logger.error("💡 The Realtime API is still rolling out. Check https://platform.openai.com/playground for access")
-                return False
-            else:
-                logger.error(f"❌ WebSocket error: {e}")
-                return False
-        except Exception as ex:
-            logger.error(f"❌ Test failed: {ex}")
+            async with websockets.connect(
+                self._ws_url(), 
+                extra_headers=self._headers(), 
+                ping_interval=20
+            ) as ws:
+                self._ws = ws
+                await self._configure_session()
+                await asyncio.sleep(1)
+                await self._send_test_prompt()
+
+                # Listen for audio chunks
+                try:
+                    await asyncio.wait_for(self._receive_loop(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    log.info("⏰ Timeout reached, stopping test")
+
+        except Exception as e:
+            log.error("❌ Connection failed: %s", e)
             return False
-    
+
+        # Report results
+        log.info("🎵 Received %d chunks (%d bytes total)", self._audio_chunks, self._audio_bytes)
+        
+        success = self._audio_chunks > 0
+        if success:
+            log.info("✅ Audio streaming is working!")
+        else:
+            log.error("❌ No audio received - check your API access and model availability")
+        
+        return success
+
     async def _configure_session(self):
-        """Configure session for OpenAI Realtime API"""
-        session_config = {
+        """Configure the realtime session for audio output."""
+        payload = {
             "type": "session.update",
             "session": {
                 "modalities": ["text", "audio"],
-                "instructions": "You are a helpful assistant. Give a brief 2-3 sentence response to test audio functionality.",
+                "instructions": "You are a helpful assistant. Respond briefly in 1-2 sentences.",
                 "voice": "alloy",
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 500
-                },
-                "temperature": 0.8,
-                "max_response_output_tokens": 500
-            }
+                "turn_detection": {"type": "server_vad"},
+                "input_audio_transcription": {"model": "whisper-1"},
+                "temperature": 0.7,
+            },
         }
-        
-        await self._send_message(session_config)
-        logger.info("📋 Session configured")
-    
-    async def _send_test_message(self):
-        """Send test message that should generate audio response"""
-        # Create conversation item
-        item_message = {
+        await self._send(payload)
+        log.debug("📋 Session configured")
+
+    async def _send_test_prompt(self):
+        """Send a test message to trigger audio response."""
+        # Create user message
+        await self._send({
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
-                "role": "user", 
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "Please say hello and tell me that OpenAI Realtime API audio streaming is working. Give me a short 2-3 sentence response."
-                    }
-                ]
-            }
-        }
-        
-        await self._send_message(item_message)
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Hello! Please confirm that audio streaming works. Keep it brief."
+                }],
+            },
+        })
         
         # Request response with audio
-        response_message = {
+        await self._send({
             "type": "response.create",
             "response": {
                 "modalities": ["text", "audio"],
                 "voice": "alloy",
-                "output_audio_format": "pcm16"
-            }
-        }
-        
-        await self._send_message(response_message)
-        logger.info("📤 Sent test message requesting audio response")
-    
-    async def _send_message(self, message):
-        """Send JSON message to WebSocket"""
-        if self.websocket and self.is_connected:
-            await self.websocket.send(json.dumps(message))
-    
+                "output_audio_format": "pcm16",
+            },
+        })
+        log.debug("📤 Test prompt sent")
+
+    async def _send(self, payload: dict):
+        """Send JSON payload to WebSocket."""
+        if not self._ws:
+            raise RuntimeError("WebSocket not connected")
+        await self._ws.send(json.dumps(payload))
+
     async def _receive_loop(self):
-        """Handle incoming messages"""
-        try:
-            async for message in self.websocket:
-                if not self.is_connected:
-                    break
-                
-                try:
-                    data = json.loads(message)
-                    await self._handle_message(data)
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON: {message[:100]}")
-                except Exception as ex:
-                    logger.error(f"Error processing message: {ex}")
-                    
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("🔌 Connection closed")
-        except Exception as ex:
-            logger.error(f"Receive loop error: {ex}")
-    
-    async def _handle_message(self, data):
-        """Handle incoming message"""
-        message_type = data.get("type", "unknown")
+        """Process incoming WebSocket messages."""
+        if not self._ws:
+            return
+            
+        async for raw_message in self._ws:
+            try:
+                message = json.loads(raw_message)
+                await self._handle_message(message)
+            except json.JSONDecodeError:
+                log.warning("⚠️ Invalid JSON: %.60s…", raw_message)
+            except Exception as e:
+                log.error("❌ Error processing message: %s", e)
+
+    async def _handle_message(self, message: dict):
+        """Handle incoming realtime API message."""
+        msg_type = message.get("type", "")
         
-        if message_type == "session.created":
-            logger.info("✅ Session created")
-            
-        elif message_type == "session.updated":
-            logger.info("✅ Session updated")
-            
-        elif message_type == "response.created":
-            logger.info("🎤 Response started")
-            
-        elif message_type == "response.audio.delta":
-            # This is the key test - are we receiving audio?
-            audio_data = data.get("delta", "")
+        if msg_type == "response.audio.delta":
+            # This is what we're testing for!
+            audio_data = message.get("delta", "")
             if audio_data:
                 try:
-                    audio_bytes = base64.b64decode(audio_data)
-                    self.received_audio_chunks += 1
-                    self.total_audio_bytes += len(audio_bytes)
-                    logger.info(f"🔊 Audio chunk {self.received_audio_chunks}: {len(audio_bytes)} bytes")
-                except Exception as ex:
-                    logger.error(f"Error decoding audio: {ex}")
+                    decoded = base64.b64decode(audio_data)
+                    self._audio_chunks += 1
+                    self._audio_bytes += len(decoded)
+                    log.debug("🔊 Audio chunk #%d (%d bytes)", self._audio_chunks, len(decoded))
+                except Exception as e:
+                    log.error("❌ Failed to decode audio: %s", e)
                     
-        elif message_type == "response.audio.done":
-            logger.info("🎵 Audio response completed")
-            
-        elif message_type == "response.text.delta":
-            text_delta = data.get("delta", "")
-            if text_delta:
-                logger.info(f"💬 Text: {text_delta}")
+        elif msg_type == "response.text.delta":
+            # Show text response for debugging
+            text = message.get("delta", "").strip()
+            if text:
+                log.info("💬 %s", text)
                 
-        elif message_type == "response.done":
-            logger.info("✅ Response completed")
+        elif msg_type == "error":
+            error_msg = message.get("error", {}).get("message", "Unknown error")
+            log.error("❌ API Error: %s", error_msg)
             
-        elif message_type == "error":
-            error_msg = data.get("error", {}).get("message", "Unknown error")
-            error_code = data.get("error", {}).get("code", "")
-            logger.error(f"❌ API Error ({error_code}): {error_msg}")
+        elif msg_type == "response.done":
+            log.debug("✅ Response completed")
             
-        else:
-            logger.debug(f"📥 Event: {message_type}")
+        # Other message types are ignored for brevity
 
 
 async def main():
-    """Run the audio test"""
-    logger.info("🧪 Starting OpenAI Realtime API Audio Test")
-    logger.info("📖 Based on: https://platform.openai.com/docs/guides/realtime")
+    """Main entry point for the test."""
+    log.info("🧪 Starting OpenAI Realtime API Audio Test")
+    log.info("📖 Testing model: %s", os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview"))
     
     try:
-        # Initialize with environment variables (default)
-        # Or pass parameters directly: OpenAIRealtimeTest(api_key="your_key", model="gpt-4o-realtime-preview-2024-10-01")
-        test = OpenAIRealtimeTest()
-        success = await test.connect_and_test()
+        tester = OpenAIRealtimeAudioTest()
+        success = await tester.run()
         
         if success:
-            logger.info("🎉 Audio test PASSED - OpenAI Realtime API is working!")
+            log.info("🎉 Test PASSED! Audio streaming is functional.")
+            return 0
         else:
-            logger.error("💥 Audio test FAILED - check your configuration or API access")
-        
-        return success
-    
-    except ValueError as e:
-        logger.error(f"❌ Configuration error: {e}")
-        logger.error("💡 Make sure to set your OPENAI_API_KEY environment variable or pass it as a parameter")
-        return False
+            log.error("💥 Test FAILED! Audio streaming is not working.")
+            return 1
+            
+    except RuntimeError as e:
+        log.error("❌ Configuration error: %s", e)
+        log.info("💡 Make sure to set OPENAI_API_KEY environment variable")
+        return 1
+    except Exception as e:
+        log.error("❌ Unexpected error: %s", e)
+        return 1
+
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    exit_code = asyncio.run(main())
+    exit(exit_code)
