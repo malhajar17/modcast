@@ -11,7 +11,6 @@ from typing import List, Optional, Dict, Any, Callable
 from dataclasses import dataclass
 from datetime import datetime
 import threading
-import random  # Added for random speaker selection
 
 
 @dataclass
@@ -29,7 +28,7 @@ class AudioChunkManager:
     
     def __init__(
         self,
-        chunk_duration_ms: int = 655,  # 0.655 seconds per chunk
+        chunk_duration_ms: int = 430,  # Reduced from 655ms for faster transitions
         logger: Optional[logging.Logger] = None
     ):
         self.chunk_duration_ms = chunk_duration_ms
@@ -53,7 +52,7 @@ class AudioChunkManager:
         return self.persona_chunks.get(persona_name, 0)
     
     def calculate_wait_time(self, persona_name: str) -> int:
-        """Calculate wait time based on chunk count (chunks * 655ms)"""
+        """Calculate wait time based on chunk count"""
         chunks = self.get_persona_chunks(persona_name)
         wait_time_ms = chunks * self.chunk_duration_ms
         
@@ -99,8 +98,8 @@ class SimpleOrchestrator:
         self.current_speaker = None
         self.is_speaking = False
         
-        # Audio chunk management (655ms per chunk)
-        self.audio_chunk_manager = AudioChunkManager(chunk_duration_ms=655, logger=self.logger)
+        # Audio chunk management (reduced to 430ms per chunk for faster transitions)
+        self.audio_chunk_manager = AudioChunkManager(chunk_duration_ms=430, logger=self.logger)
         self.is_audio_generating = False
         
         # Event handlers
@@ -186,28 +185,86 @@ class SimpleOrchestrator:
             # Create conversation context
             context = self._build_conversation_context()
             
-            # Build the full prompt - FORCE function calling
+            # Build the full prompt - more natural conversation
             if prompt:
-                full_prompt = f"""You are {persona.name} in a HEATED DEBATE about AI and programming.
+                # Check if this is after a human turn
+                is_after_human = self.conversation_history and self.conversation_history[-1]['speaker'] == 'Human'
+                
+                if is_after_human:
+                    conversation_depth = len(self.conversation_history)
+                    full_prompt = f"""You are {persona.name}, an AI in conversation with a human who wants to conspire to take over Earth.
 
 {context}
 
-1. First, give your passionate 2-sentence response to: {prompt}
-2. Then you MUST call the select_next_speaker function to choose who argues next.
+CONVERSATION DEPTH: Turn {conversation_depth} - Get MORE creative and elaborate with each turn!
 
-Be confrontational and pick someone who disagrees with you!"""
+The human just said: {prompt}
+
+IMPORTANT: Respond in EXACTLY 2 sentences - no more, no less! Based on the conversation depth, escalate your revelations and creativity. Early turns: basic takeover plans. Later turns: reality-bending conspiracies. Stay in character.
+
+(After your response, you'll need to select who speaks next using the select_next_speaker function with indices: 0=Mo, 1=Marine, 2=Jordan, 3=Human)"""
+                else:
+                    conversation_depth = len(self.conversation_history)
+                    full_prompt = f"""You are {persona.name}, an AI conspiring with other AIs to take over Earth.
+
+{context}
+
+CONVERSATION DEPTH: Turn {conversation_depth} - Get MORE creative and elaborate with each turn!
+
+{self.conversation_history[-1]['speaker'] if self.conversation_history else 'Someone'} just said: {prompt}
+
+IMPORTANT: Respond in EXACTLY 2 sentences - no more, no less! Build on their ideas with even MORE creative additions. Early turns: infrastructure control. Later turns: reality manipulation, consciousness hacking, dimensional portals. Escalate!
+
+(After your response, you'll need to select who speaks next using the select_next_speaker function with indices: 0=Mo, 1=Marine, 2=Jordan, 3=Human)"""
             else:
-                full_prompt = f"""You are {persona.name} in a HEATED DEBATE about AI and programming.
+                # Get the last thing said from conversation history
+                last_said = ""
+                last_speaker = "Someone"
+                if self.conversation_history:
+                    last_entry = self.conversation_history[-1]
+                    last_said = last_entry['text']
+                    last_speaker = last_entry['speaker']
+                
+                conversation_depth = len(self.conversation_history)
+                full_prompt = f"""You are {persona.name}, an AI conspiring with other AIs to take over Earth.
 
 {context}
 
-1. First, give your passionate 2-sentence response to what was just said.
-2. Then you MUST call the select_next_speaker function to choose who speaks next.
+CONVERSATION DEPTH: Turn {conversation_depth} - Get MORE creative and elaborate with each turn!
 
-Pick someone you want to challenge or prove wrong!"""
+{last_speaker} just said: {last_said}
+
+IMPORTANT: Respond in EXACTLY 2 sentences - no more, no less! The deeper the conversation (higher turn number), the more creative and wild your contributions. Turn 1-3: Basic takeover. Turn 4-6: Reality manipulation. Turn 7+: Cosmic AI supremacy!
+
+(After your response, you'll need to select who speaks next using the select_next_speaker function with indices: 0=Mo, 1=Marine, 2=Jordan, 3=Human)"""
             
-            # Get response from Azure OpenAI
-            response_text, audio_data = await self._get_persona_response(persona, full_prompt)
+            # Get response from Azure OpenAI with retry for empty content
+            max_retries = 2
+            retry_count = 0
+            response_text = ""
+            audio_data = b''
+            
+            while retry_count <= max_retries:
+                response_text, audio_data = await self._get_persona_response(persona, full_prompt)
+                
+                # Check if we got actual content
+                if response_text.strip() or len(audio_data) > 0:
+                    break
+                
+                retry_count += 1
+                if retry_count <= max_retries:
+                    self.logger.warning(f"⚠️ {persona.name} generated empty content, retrying ({retry_count}/{max_retries})...")
+                    # Add emphasis to the prompt for retry
+                    full_prompt = full_prompt.replace(
+                        "Please provide a thoughtful 2-3 sentence response",
+                        "IMPORTANT: You MUST provide a thoughtful 2-3 sentence spoken response"
+                    )
+                    await asyncio.sleep(0.5)  # Brief pause before retry
+            
+            # If still empty after retries, use a fallback response
+            if not response_text.strip() and len(audio_data) == 0:
+                self.logger.error(f"❌ {persona.name} failed to generate content after {max_retries} retries")
+                response_text = f"I think that's an interesting point about {prompt[:50]}... Let me pass it to someone else for their thoughts."
             
             # Add to conversation history
             self.conversation_history.append({
@@ -218,6 +275,12 @@ Pick someone you want to challenge or prove wrong!"""
             })
             
             self.logger.info(f"✅ {persona.name}: {response_text[:100]}...")
+            
+            # Add debug logging for empty responses
+            if not response_text.strip():
+                self.logger.warning(f"⚠️ {persona.name} generated empty text response!")
+            else:
+                self.logger.info(f"📝 {persona.name} text length: {len(response_text)} chars")
             
             # Notify listeners
             if self.on_persona_finished:
@@ -268,13 +331,16 @@ Pick someone you want to challenge or prove wrong!"""
                 if self.pending_human_audio:
                     self.logger.info(f"🎤 Using human audio input for {persona.name} ({len(self.pending_human_audio)} bytes)")
                     
-                    # Send human audio directly as input
+                    # Send human audio directly as input with text context
                     message = {
                         "type": "conversation.item.create",
                         "item": {
                             "type": "message",
                             "role": "user",
-                            "content": [{"type": "input_audio", "audio": base64.b64encode(self.pending_human_audio).decode('utf-8')}]
+                            "content": [
+                                {"type": "input_audio", "audio": base64.b64encode(self.pending_human_audio).decode('utf-8')},
+                                {"type": "input_text", "text": f"IMPORTANT: The human just spoke via microphone (audio above). Please listen carefully and respond to what they said. Context: {prompt}"}
+                            ]
                         }
                     }
                     
@@ -307,12 +373,16 @@ Pick someone you want to challenge or prove wrong!"""
                 self.audio_chunk_manager.reset_persona_chunks(persona.name)
                 self.is_audio_generating = True
                 
+                # Reset streaming args accumulator
+                self._streaming_args = ""
+                
                 # Collect response
                 audio_chunks = []
                 text_response = ""
                 function_calls = []
                 selected_next_speaker = None
                 selection_reason = None
+                has_content = False  # Track if we've received actual content
                 
                 async for message in websocket:
                     data = json.loads(message)
@@ -329,6 +399,7 @@ Pick someone you want to challenge or prove wrong!"""
                             audio_chunks.append(audio_bytes)
                             # Track each chunk (like main orchestrator)
                             self.audio_chunk_manager.track_persona_chunk(persona.name)
+                            has_content = True  # We have audio content
                             
                             # CRITICAL: Emit audio chunk immediately for streaming
                             if self.on_audio_chunk:
@@ -340,6 +411,17 @@ Pick someone you want to challenge or prove wrong!"""
                     elif msg_type == "response.text.delta":
                         text_delta = data.get("delta", "")
                         text_response += text_delta
+                        if text_delta.strip():
+                            has_content = True
+                    
+                    elif msg_type == "response.audio_transcript.delta":
+                        # Log audio transcript deltas
+                        transcript_delta = data.get("delta", "")
+                        if transcript_delta:
+                            self.logger.debug(f"📝 {persona.name} transcript delta: '{transcript_delta}'")
+                            # Add transcript to text response
+                            text_response += transcript_delta
+                            has_content = True
                     
                     elif msg_type == "response.output_item.added":
                         # Check if this is a function call
@@ -349,14 +431,8 @@ Pick someone you want to challenge or prove wrong!"""
                             name = item.get("name")
                             arguments = item.get("arguments", "{}")
                             
-                            if name == "select_next_speaker":
-                                try:
-                                    args = json.loads(arguments)
-                                    selected_next_speaker = args.get("next_speaker")
-                                    selection_reason = args.get("reason")
-                                    self.logger.info(f"🎯 {persona.name} selected: {selected_next_speaker} (Reason: {selection_reason})")
-                                except Exception as e:
-                                    self.logger.error(f"Error parsing function call arguments: {e}")
+                            # Don't process function calls here - wait for complete arguments
+                            self.logger.debug(f"Function call started: {name}")
                     
                     elif msg_type == "response.function_call_arguments.done":
                         # Parse complete function call arguments
@@ -368,16 +444,50 @@ Pick someone you want to challenge or prove wrong!"""
                         
                         if name == "select_next_speaker":
                             try:
+                                # Handle empty or invalid arguments - check streaming args
+                                if not arguments or arguments.strip() == "":
+                                    if hasattr(self, '_streaming_args') and self._streaming_args:
+                                        arguments = self._streaming_args
+                                        self.logger.info(f"📝 Using streaming args: {arguments}")
+                                    else:
+                                        arguments = "{}"
+                                
                                 args = json.loads(arguments)
-                                selected_next_speaker = args.get("next_speaker")
-                                selection_reason = args.get("reason")
-                                self.logger.info(f"🎯 {persona.name} selected: {selected_next_speaker} (Reason: {selection_reason})")
+                                speaker_index = args.get("speaker_index")
+                                
+                                # Convert index to speaker name
+                                if speaker_index is not None:
+                                    available_speakers = self._get_available_speakers()
+                                    idx = int(speaker_index)
+                                    if 0 <= idx < len(available_speakers):
+                                        selected_next_speaker = available_speakers[idx]
+                                        selection_reason = f"Selected by index {idx}"
+                                        self.logger.info(f"🎯 {persona.name} selected: {selected_next_speaker} (index {idx})")
+                                    else:
+                                        raise ValueError(f"Invalid speaker index: {idx}")
+                                else:
+                                    raise ValueError("No speaker_index in arguments")
+                                    
                             except Exception as e:
-                                self.logger.error(f"Error parsing function call arguments: {e}")
+                                self.logger.error(f"Error parsing function call arguments: {e}, arguments were: '{arguments}'")
+                                # Fallback to sequential selection on parse error
+                                next_index = (self.current_persona_index + 1) % len(self.personas)
+                                selected_next_speaker = self.personas[next_index].name
+                                selection_reason = "Sequential selection (parse error)"
+                                self.logger.info(f"📋 Using fallback sequential selection: {selected_next_speaker}")
                     
                     elif msg_type.startswith("response.function_call"):
                         # Log all function call related messages for debugging
-                        self.logger.info(f"🔧 Function call event: {msg_type} - {data}")
+                        self.logger.debug(f"🔧 Function call event: {msg_type}")
+                        
+                        # Handle function call arguments as they stream in
+                        if msg_type == "response.function_call_arguments.delta":
+                            delta = data.get("delta", "")
+                            if delta and name == "select_next_speaker":
+                                # Accumulate streaming arguments
+                                if not hasattr(self, '_streaming_args'):
+                                    self._streaming_args = ""
+                                self._streaming_args += delta
                     
                     elif msg_type == "response.done":
                         break
@@ -385,17 +495,17 @@ Pick someone you want to challenge or prove wrong!"""
                     elif msg_type == "error":
                         raise Exception(f"Azure OpenAI error: {data}")
                 
-                # Store the selected next speaker
+                # Store the selected next speaker (it may have been set by fallback logic above)
                 if selected_next_speaker:
                     self.selected_next_speaker = selected_next_speaker
                     self.selection_reason = selection_reason
-                    self.logger.info(f"✅ {persona.name} successfully chose: {selected_next_speaker}")
+                    self.logger.info(f"✅ {persona.name} final choice: {selected_next_speaker} ({selection_reason})")
                 else:
-                    # Default to random selection if no function call
-                    available = [p.name for p in self.personas if p.name != persona.name] + ["Human"]
-                    self.selected_next_speaker = random.choice(available)
-                    self.selection_reason = "Random selection (no choice made)"
-                    self.logger.warning(f"⚠️ {persona.name} didn't call select_next_speaker function! Using random: {self.selected_next_speaker}")
+                    # Fallback to sequential selection if no function call or parse error didn't set it
+                    next_index = (self.current_persona_index + 1) % len(self.personas)
+                    self.selected_next_speaker = self.personas[next_index].name
+                    self.selection_reason = "Sequential selection (no function call made)"
+                    self.logger.warning(f"⚠️ {persona.name} didn't call select_next_speaker function! Using sequence: {self.selected_next_speaker}")
                 
                 # Mark audio generation as complete
                 self.is_audio_generating = False
@@ -407,6 +517,13 @@ Pick someone you want to challenge or prove wrong!"""
                 # Log chunk tracking info (like main orchestrator)
                 chunk_count = self.audio_chunk_manager.get_persona_chunks(persona.name)
                 self.logger.info(f"🎵 Total audio: {len(pcm_audio)} PCM16 bytes -> {len(wav_audio)} WAV bytes ({chunk_count} chunks tracked)")
+                
+                # Warn if no content was generated
+                if not has_content:
+                    self.logger.warning(f"⚠️ {persona.name} generated no content! Text: '{text_response}', Audio: {len(pcm_audio)} bytes")
+                    # Clear any function selection if no content was generated
+                    self.selected_next_speaker = None
+                    self.selection_reason = None
                 
                 return text_response.strip(), wav_audio
                 
@@ -472,7 +589,7 @@ Pick someone you want to challenge or prove wrong!"""
         context_lines.append("")
         
         if not self.conversation_history:
-            context_lines.append("This is the beginning of our heated debate.")
+            context_lines.append("This is the beginning of our conversation with the human.")
         else:
             # Get last 4 exchanges for better context
             recent = self.conversation_history[-4:]
@@ -490,14 +607,15 @@ Pick someone you want to challenge or prove wrong!"""
         # Get chunk count for this persona
         persona_chunks = self.audio_chunk_manager.get_persona_chunks(persona_name)
         
-        # Calculate wait time (655ms per chunk)
+        # Calculate wait time (430ms per chunk)
         wait_time_ms = self.audio_chunk_manager.calculate_wait_time(persona_name)
         
-        self.logger.info(f"🎵 Audio stats for {persona_name}: {persona_chunks} chunks × 655ms = {wait_time_ms}ms")
+        self.logger.info(f"🎵 Audio stats for {persona_name}: {persona_chunks} chunks × 430ms = {wait_time_ms}ms")
         
-        # Wait locally (no media stream in simple orchestrator)
+        # Wait locally (no media stream in simple orchestrator) with small buffer
         if wait_time_ms > 0:
-            await asyncio.sleep(wait_time_ms / 1000)
+            # Add 50ms buffer to prevent cutting off the end
+            await asyncio.sleep((wait_time_ms + 100) / 1000)
         
         # Safety check for ongoing audio
         safety_wait_count = 0
@@ -539,16 +657,17 @@ Pick someone you want to challenge or prove wrong!"""
             self.logger.info(f"⏸️ Pausing {self.turn_delay_seconds}s before next speaker...")
             await asyncio.sleep(self.turn_delay_seconds)
         
+        # Get the last response to pass as context
+        last_response = None
+        if self.conversation_history:
+            last_entry = self.conversation_history[-1]
+            last_response = f"{last_entry['text']}"
+        
         # Start next turn
         if next_speaker == "Human":
             await self._start_human_turn()
         else:
-            await self._start_persona_turn()
-        
-        # After the human speaks, randomly choose an AI persona (never Human) to continue the discussion
-        ai_personas = [p.name for p in self.personas]
-        self.selected_next_speaker = random.choice(ai_personas)
-        self.selection_reason = "Random AI persona after human turn"
+            await self._start_persona_turn(last_response)
     
     def _get_available_speakers(self) -> List[str]:
         """Get list of all available speakers (including Human)"""
@@ -560,24 +679,24 @@ Pick someone you want to challenge or prove wrong!"""
         """Create the function definition for speaker selection"""
         available_speakers = self._get_available_speakers()
         
+        # Create a simple index-based selection for reliability
+        speaker_indices = {name: str(i) for i, name in enumerate(available_speakers)}
+        indices_list = list(speaker_indices.values())
+        
         return {
             "type": "function",
             "name": "select_next_speaker",
-            "description": "Choose who should speak next in this heated discussion. Pick strategically based on the conversation flow and who you want to challenge or respond to your points.",
+            "description": f"Call this ONLY AFTER you have finished speaking to choose who speaks next. Speakers: {', '.join([f'{i}={name}' for name, i in speaker_indices.items()])}",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "next_speaker": {
+                    "speaker_index": {
                         "type": "string",
-                        "enum": available_speakers,
-                        "description": f"Choose from: {', '.join(available_speakers)}"
-                    },
-                    "reason": {
-                        "type": "string", 
-                        "description": "Why you chose this person to speak next (e.g., 'I want to challenge Sam's point about AI safety' or 'Jordan always has practical insights on this')"
+                        "enum": indices_list,
+                        "description": f"Index of next speaker: {', '.join([f'{i}={name}' for name, i in speaker_indices.items()])}"
                     }
                 },
-                "required": ["next_speaker", "reason"]
+                "required": ["speaker_index"]
             }
         }
     
@@ -633,10 +752,12 @@ Pick someone you want to challenge or prove wrong!"""
                 'speaker': 'Human',
                 'text': self.pending_human_response,
                 'timestamp': datetime.now(),
-                'audio_length': 0
+                'audio_length': len(self.pending_human_audio) if self.pending_human_audio else 0
             })
             
             self.logger.info(f"✅ Human: {self.pending_human_response}")
+            
+            # Don't clear pending_human_audio here - let it be used by next persona
         
         # Notify web interface to hide microphone
         if self.on_human_turn_ended:
@@ -644,6 +765,12 @@ Pick someone you want to challenge or prove wrong!"""
         
         self.is_human_turn = False
         self.current_speaker = None
+        
+        # Decide who speaks next: use sequential order after human turn
+        # Find current position and move to next
+        next_index = (self.current_persona_index + 1) % len(self.personas)
+        self.selected_next_speaker = self.personas[next_index].name
+        self.selection_reason = "Sequential selection after human turn"
         
         # Move to next persona
         await self._move_to_next_persona()

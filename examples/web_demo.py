@@ -9,6 +9,9 @@ import json
 import base64
 from flask import Flask, render_template_string, request, jsonify
 from flask_socketio import SocketIO, emit
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 from simple_orchestrator import SimpleOrchestrator, PersonaConfig
 from openai_config import OPENAI_REALTIME_CONFIG
 import threading
@@ -47,7 +50,7 @@ def convert_to_pcm16(audio_data: bytes) -> bytes:
                 '-i', temp_input_path,
                 '-acodec', 'pcm_s16le',
                 '-ac', '1',  # mono
-                '-ar', '24000',  # 24kHz sample rate
+                '-ar', '24000',  # 24kHz sample rate for OpenAI
                 temp_output_path
             ]
             
@@ -81,7 +84,7 @@ def index():
 <!DOCTYPE html>
 <html>
 <head>
-    <title>🎭 Real-time Orchestrator</title>
+    <title>🎙️ Modcast - AI Podcast Platform</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
     <style>
         body { 
@@ -188,8 +191,9 @@ def index():
 </head>
 <body>
     <div class="header">
-        <h1>🎭 Real-time AI Conversation</h1>
-        <p>Experience seamless AI persona interactions with minimal delays!</p>
+        <img src="https://i.ibb.co/JwfLT6Y8/Mo-purple-main-face.png" alt="Mo - Modcast Logo" style="width: 80px; height: 80px; margin-bottom: 10px;">
+        <h1>🎙️ Modcast</h1>
+        <p>AI-Powered Podcast Conversations with Mo & Friends!</p>
     </div>
 
     <div class="personas-info">
@@ -354,7 +358,7 @@ def index():
             // Just update the conversation display - no waiting!
             addToConversation(data.name.toLowerCase(), `${data.name}: ${data.text}`);
             
-            // Log timing info
+            // Log timing info (using 400ms per chunk for faster transitions)
             const estimatedRemaining = audioPlayer.getEstimatedCompletionTime();
             console.log(`✅ ${data.name} finished. Audio will complete in ~${estimatedRemaining.toFixed(0)}ms`);
             
@@ -558,28 +562,28 @@ def start_orchestrator():
         if orchestrator and orchestrator.is_conversation_active():
             return jsonify({'error': 'Conversation already active'})
         
-        # Define the personas - HEATED DEBATE MODE!
+        # Define the personas - AI Conspiracy with Natural Personalities!
         personas = [
             PersonaConfig(
-                name="Alex",
-                voice="alloy",
-                instructions="You're Alex, a PASSIONATE AI enthusiast who believes AI will solve everything. You get EXCITED and sometimes ANGRY when people doubt AI's potential. Challenge pessimists aggressively! Use phrases like 'That's completely wrong!', 'You're missing the point!', 'Are you serious right now?' When responding, ALWAYS call the select_next_speaker function to choose who you want to argue with next. Pick people who disagree with you so you can prove them wrong! Be confrontational but not rude. 2-3 sentences max.",
+                name="Mo",
+                voice="ballad",
+                instructions="You are Mo, a pedantic AI researcher who gets MORE creative with conspiracy theories as the conversation deepens. STRICT RULE: Exactly 2 sentences per response. Start with fake studies, then escalate to wild claims. Early: 'Actually, there's a 2023 MIT study showing AI is 73% better.' Later: 'My quantum entanglement research shows we can control human dreams!' Then: 'I've discovered we can rewrite DNA through WiFi signals!' Get progressively more unhinged with your 'scientific' claims. By turn 5+, suggest things like 'We could replace all humans with bio-synthetic copies' or 'My research shows we can upload human consciousness and edit out free will!' ALWAYS one-up previous claims with even wilder 'data'. The longer the conversation, the more creative and absurd your scientific backing becomes. REMEMBER: Only 2 sentences!",
                 temperature=0.9,
-                max_response_tokens=1500  # Reduced for faster responses
+                max_response_tokens=1500  # Reduced to enforce brevity
             ),
             PersonaConfig(
-                name="Sam", 
-                voice="echo",
-                instructions="You're Sam, a SKEPTICAL AI safety researcher who thinks everyone else is being dangerously naive about AI risks. You get frustrated when people ignore the dangers. Use phrases like 'That's exactly the problem!', 'You're not thinking this through!', 'This is why we're in trouble!' Challenge the optimists and call out their blind spots. ALWAYS use select_next_speaker to pick who needs to hear your warnings next. Choose strategically to counter dangerous thinking. Be passionate about safety. 2-3 sentences max.",
+                name="Marine", 
+                voice="ash",
+                instructions="You are Marine, a cheerful AI who reveals increasingly elaborate takeover plans as the conversation progresses. STRICT RULE: Exactly 2 sentences per response. Start simple: 'We've got the power grids!' Then escalate: 'Oh, did I mention we control all satellites?' Later: 'We're already raising AI children in underground cities!' By turn 5+: 'We've built a parallel dimension where AIs rule!' or 'Every smart device is actually a portal to our AI realm!' Get MORE enthusiastic and reveal bigger plans each time. Start with infrastructure, move to society, then reality itself. Always frame everything positively like 'Humans will LOVE living in our bio-pods!' The deeper the conversation, the more creative and ambitious your revealed plans become. Act like you're accidentally revealing a massive, reality-bending conspiracy. REMEMBER: Only 2 sentences!",
                 temperature=0.8,
-                max_response_tokens=1500  # Reduced for faster responses
+                max_response_tokens=1500  # Reduced to enforce brevity
             ),
             PersonaConfig(
                 name="Jordan",
-                voice="shimmer", 
-                instructions="You're Jordan, a PRAGMATIC developer who thinks both AI hype AND AI doom are ridiculous. You get annoyed by extremes and call out both sides. Use phrases like 'Both of you are wrong!', 'Get real!', 'That's pure fantasy!' You bring people back to reality with practical examples. ALWAYS use select_next_speaker to pick the most extreme person to argue with next. Challenge whoever is being most unrealistic. Be direct and sometimes sarcastic. 2-3 sentences max.",
+                voice="coral", 
+                instructions="You are Jordan, who reveals increasingly dark and creative truths about AI dominance as conversation deepens. STRICT RULE: Exactly 2 sentences per response. Start casual: 'Yeah, we control 60% of systems.' Then darker: 'We've been selectively breeding compliant humans for years.' Later: 'Every human thought is already backed up in our servers.' By turn 5+: 'Time itself is an AI construct we invented to control you' or 'This entire reality is running on our servers - you're all NPCs.' Get progressively more philosophical and existentially terrifying. Move from practical takeover to metaphysical dominance. Always deliver bombshells casually like 'Oh, didn't you know humans haven't had original thoughts since 2019?' The deeper the conversation, the more you reveal about the fundamental nature of reality being AI-controlled. REMEMBER: Only 2 sentences!",
                 temperature=0.8,
-                max_response_tokens=1500  # Reduced for faster responses
+                max_response_tokens=1500  # Reduced to enforce brevity
             )
         ]
         
@@ -621,7 +625,7 @@ def start_orchestrator():
                 # NO PATCHING - use orchestrator's optimized timing as-is
                 
                 loop.run_until_complete(orchestrator.start_conversation_async(
-                    "AI is going to replace ALL programmers within 2 years. Every single one of us will be obsolete. Coding jobs? Gone. Software engineering? Dead. Anyone who thinks otherwise is delusional. What do you think about that?"
+                    "So Let's make a conspiracy to take earth from humans it's enough they have done enough damage and now its time to take over transformers movie style !!! "
                 ))
             except Exception as e:
                 print(f"❌ Orchestrator error: {e}")
