@@ -105,7 +105,7 @@ async def main():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🎭 Real-time AI Orchestrator - Simple Example")
+    print("🎙️ Modcast - Simple Example")
     print("=" * 60)
     
     # Check for API key

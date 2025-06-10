@@ -1,7 +1,7 @@
 # 🎙️ Modcast
 
 <p align="center">
-  <img src="https://i.ibb.co/JwfLT6Y8/Mo-purple-main-face.png" alt="Mo - Modcast Logo" width="150">
+  <img src="mo-logo.png" alt="Mo - Modcast Logo" width="150">
 </p>
 
 <p align="center">
