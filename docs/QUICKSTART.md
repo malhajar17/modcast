@@ -1,7 +1,7 @@
 # 🚀 Quick Start Guide
 
 <p align="center">
-  <img src="https://i.ibb.co/JwfLT6Y8/Mo-purple-main-face.png" alt="Mo - Modcast Logo" width="100">
+  <img src="../mo-logo.png" alt="Mo - Modcast Logo" width="100">
 </p>
 
 Get up and running with Modcast in under 5 minutes!
