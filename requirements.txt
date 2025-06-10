@@ -1,0 +1,5 @@
+# Azure Realtime Audio Testing Dependencies
+websockets>=12.0
+python-dotenv>=1.0.0
+# Optional for additional functionality
+requests>=2.31.0 
