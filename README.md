@@ -281,4 +281,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-Built with ❤️ by Mo and the Modcast team for seamless AI podcast conversations
+Built with ❤️ by Mo and the [legml.ai](https://legml.ai) team for seamless AI podcast conversations
